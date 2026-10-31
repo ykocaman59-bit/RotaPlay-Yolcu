@@ -1,1 +1,62 @@
+<!doctype html>
+<html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RotaPlay Yönetim</title>
+<style>
+:root{--ink:#14161a;--panel:#1d2026;--line:#2c3038;--text:#f1f1ee;--mute:#9aa0aa;--cab:#ffc20e;--ok:#46c37b;--bad:#ff6b5e}
+*{box-sizing:border-box}body{margin:0;padding:16px;background:var(--ink);color:var(--text);font:16px/1.4 system-ui,sans-serif;max-width:640px;margin:auto}
+h1{font-size:22px}input,button{font:inherit;border-radius:12px;border:1px solid var(--line);padding:12px 14px}
+input{width:100%;background:var(--panel);color:var(--text);margin:6px 0}button{background:var(--cab);color:#1a1400;font-weight:700;border:0;cursor:pointer}
+.d{background:var(--panel);border-radius:16px;padding:14px;margin:10px 0}.m{color:var(--mute);font-size:14px}
+.row{display:flex;gap:8px;margin-top:10px}.row button{flex:1;padding:10px}.g{background:transparent;color:var(--bad);border:1px solid var(--bad)}.t{background:transparent;color:var(--text);border:1px solid var(--line)}
+.tag{display:inline-block;padding:2px 10px;border-radius:99px;font-size:13px;font-weight:700}
+.approved{background:#46c37b33;color:var(--ok)}.pending{background:#ffc20e33;color:var(--cab)}.blocked{background:#ff6b5e33;color:var(--bad)}
+</style></head><body>
+<h1>RotaPlay yönetim</h1>
+<div id="login"><input id="em" type="email" placeholder="Yönetici e-postası" autocomplete="username"><input id="pw" type="password" placeholder="Şifre" autocomplete="current-password"><button id="go" style="width:100%">Giriş yap</button></div>
+<div id="app" style="display:none"><div class="row"><button id="t1">Şoförler</button><button id="t2" class="t">Seferler</button><button id="t3" class="t">Hareketler</button></div>
+<p class="m" id="msg"></p><div id="list"></div></div><p class="m" id="err" style="color:var(--bad)"></p>
+<script src="config.js"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import { getFirestore, collection, getDocs, doc, updateDoc, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const app=initializeApp(window.FIREBASE_CONFIG),auth=getAuth(app),db=getFirestore(app);
+const tl=t=>t?new Date(t).toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'-';
+const money=n=>Number(n).toLocaleString('tr-TR',{minimumFractionDigits:2})+' ₺';
+const label={approved:'Onaylı',pending:'Onay bekliyor',blocked:'Engelli'};
+const sl={searching:'Aranıyor',accepted:'Yolda',picked_up:'Yolculukta',completed:'Tamamlandı',cancelled:'İptal',expired:'Süresi doldu'};
+const en={kayit_oldu:'Kayıt oldu',giris_yapti:'Giriş yaptı',talep_kabul:'Talebi kabul etti',talep_reddet:'Talebi reddetti',yolculuk_bitti:'Yolculuğu bitirdi',taksi_cagirdi:'Taksi çağırdı',yolcu_iptal:'Yolcu iptal etti',soforu_puanladi:'Şoförü puanladı',uygulama_acildi:'Uygulamayı açtı',sekme:'Sekmeye girdi',uygulama_ac:'Uygulama başlattı',sofor_iptal:'Yolculuğu iptal etti',yolcu_alindi:'Yolcuyu aldı',yolcuyu_puanladi:'Yolcuyu puanladı'};
+let tab=1;
+const rides=async()=>(await getDocs(query(collection(db,'rides'),orderBy('createdAt','desc'),limit(300)))).docs.map(d=>({id:d.id,...d.data()}));
 
+async function show(){
+  $('#err').textContent='';
+  try{
+    if(tab===1){
+      const [ds,rs]=await Promise.all([getDocs(collection(db,'drivers')),rides()]);
+      const a=ds.docs.map(d=>({id:d.id,...d.data()})).sort((x,y)=>(x.status==='pending'?0:1)-(y.status==='pending'?0:1)||y.createdAt-x.createdAt);
+      $('#msg').textContent=`${a.length} şoför`;
+      $('#list').innerHTML=a.map(d=>{const mine=rs.filter(r=>r.driverUid===d.id),st=mine.map(r=>r.driverRating).filter(Boolean),cn=rs.filter(r=>(r.declined||[]).includes(d.id)).length;
+        return `<div class="d"><b>${esc(d.name)}</b> <span class="tag ${d.status}">${label[d.status]||d.status}</span>
+        <div class="m">${esc(d.plate)} · ${esc(d.phone)}${st.length?` · ★ ${(st.reduce((t,x)=>t+x,0)/st.length).toFixed(1)} (${st.length})`:''}${cn?` · ${cn} iptal`:''}</div>
+        <div class="row">${d.status!=='approved'?`<button data-id="${d.id}" data-s="approved">Onayla</button>`:''}${d.status!=='blocked'?`<button class="g" data-id="${d.id}" data-s="blocked">Engelle</button>`:''}</div></div>`}).join('')||'<p class="m">Henüz şoför yok.</p>';
+    }else if(tab===2){
+      const a=await rides(),done=a.filter(x=>x.status==='completed'),tot=done.reduce((t,x)=>t+Number(x.fare||0),0);
+      $('#msg').textContent=`${done.length} tamamlanan sefer · toplam taksimetre ${money(tot)}`;
+      $('#list').innerHTML=a.map(x=>`<div class="d"><b>${esc(x.driverUid?x.driverName+' · '+x.driverPlate:'Şoför atanmadı')}</b> <span class="tag ${x.status==='completed'?'approved':x.status==='cancelled'||x.status==='expired'?'blocked':'pending'}">${sl[x.status]||x.status}</span>
+        <div>${esc(x.pickup.text)} → ${esc(x.dest.text)}</div>
+        <div class="m">${tl(x.createdAt)} · Yolcu: ${esc(x.passengerName)}${x.fare!=null?` · <b style="color:var(--cab)">${money(x.fare)}</b>`:''}${x.driverRating?` · şoföre ★${x.driverRating}`:''}${x.passengerRating?` · yolcuya ★${x.passengerRating}`:''}</div></div>`).join('')||'<p class="m">Henüz sefer yok.</p>';
+    }else{
+      const [es,ds]=await Promise.all([getDocs(query(collection(db,'events'),orderBy('t','desc'),limit(300))),getDocs(collection(db,'drivers'))]);
+      const names=Object.fromEntries(ds.docs.map(d=>[d.id,`${d.data().name} · ${d.data().plate}`]));
+      $('#msg').textContent=`Son ${es.size} hareket`;
+      $('#list').innerHTML=es.docs.map(d=>d.data()).map(e=>`<div class="d"><b>${esc(en[e.name]||e.name)}</b> <span class="m">${tl(e.t)}</span>
+        <div class="m">${esc(names[e.uid]||(e.who==='passenger'?'Yolcu':'-'))}${e.detail?' · '+esc(e.detail):''}</div></div>`).join('')||'<p class="m">Henüz hareket yok.</p>';
+    }
+  }catch(e){$('#list').innerHTML='';$('#msg').textContent='';$('#err').textContent=e.code==='permission-denied'?'Bu hesap yönetici değil (admins koleksiyonuna eklenmemiş).':'Hata: '+(e.code||e.message)}
+}
+$('#go').onclick=async()=>{try{await signInWithEmailAndPassword(auth,$('#em').value.trim(),$('#pw').value);$('#login').style.display='none';$('#app').style.display='block';show()}catch(e){$('#err').textContent='Giriş başarısız.'}};
+for(const n of [1,2,3])$('#t'+n).onclick=()=>{tab=n;show()};
+$('#list').onclick=async e=>{const id=e.target.dataset.id;if(!id)return;await updateDoc(doc(db,'drivers',id),{status:e.target.dataset.s});show()};
+</script></body></html>
