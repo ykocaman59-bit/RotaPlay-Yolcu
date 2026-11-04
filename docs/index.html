@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="tr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>RotaPlay Taksi</title>
+<title>RotaPlay Sarı Taksi</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
 <style>
 :root{--ink:#14161a;--panel:#1d2026;--line:#2c3038;--text:#f1f1ee;--mute:#9aa0aa;--cab:#ffc20e;--ok:#46c37b;--bad:#ff6b5e}
@@ -28,6 +28,18 @@ button:disabled{opacity:.5}button:focus-visible{outline:3px solid #fff}
 .kv{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--line)}.kv:last-child{border:0}.kv span:first-child{color:var(--mute)}
 .tag{display:inline-block;padding:2px 10px;border-radius:99px;font-size:13px;font-weight:700;background:#ffc20e33;color:var(--cab)}.tag.g{background:#46c37b33;color:var(--ok)}.tag.r{background:#ff6b5e33;color:var(--bad)}
 .m{color:var(--mute);font-size:14px}
+.acts{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.acts button{margin:0;padding:12px 8px;font-size:15px}.acts .wide{grid-column:1/3}
+.bellw{position:relative;display:inline-block;margin-left:6px}.bn{position:absolute;top:-11px;right:-14px;background:#ff3b30;color:#fff;border-radius:99px;font:700 11px/1 system-ui;padding:3px 6px}
+.live{background:var(--ink);border-radius:12px;padding:10px 12px;margin:8px 0;color:var(--text)}
+#panel{position:fixed;inset:0;z-index:800;background:#000a;display:flex;align-items:flex-end;justify-content:center}
+#panel .box{background:var(--panel);width:100%;max-width:520px;max-height:92vh;border-radius:20px 20px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom));overflow:auto}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}.tabs button{margin:0;padding:10px}.tabs button.on{background:var(--cab);color:#1a1400}.tabs button:not(.on){background:var(--ink);color:var(--mute)}
+#msgs{min-height:140px;max-height:42vh;overflow:auto;display:flex;flex-direction:column;gap:6px;padding:6px 0}
+.b{max-width:80%;padding:8px 12px;border-radius:14px;word-break:break-word}.b.me{align-self:flex-end;background:var(--cab);color:#1a1400}.b.dr{align-self:flex-start;background:var(--ink)}
+.b .tm{font-size:11px;opacity:.6;margin-top:2px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);top:calc(64px + env(safe-area-inset-top));background:#000d;color:#fff;padding:10px 16px;border-radius:99px;z-index:900;font-size:14px;max-width:90vw;text-align:center}
+.iban{font:700 17px/1.4 ui-monospace,Menlo,monospace;letter-spacing:.5px;word-break:break-all;color:var(--cab);margin-bottom:6px}
+.badge{display:inline-block;background:#ffc20e22;color:var(--cab);border-radius:99px;padding:2px 10px;font-size:13px;font-weight:700}
 </style></head><body>
 <div id="map"></div>
 <button id="profBtn" class="hide">Profil</button>
@@ -38,7 +50,7 @@ button:disabled{opacity:.5}button:focus-visible{outline:3px solid #fff}
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendEmailVerification, sendPasswordResetEmail, signOut, reload } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-import { getFirestore, doc, collection, setDoc, getDoc, getDocs, addDoc, updateDoc, onSnapshot, query, where, limit, runTransaction, getCountFromServer } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { getFirestore, doc, collection, setDoc, getDoc, getDocs, addDoc, updateDoc, onSnapshot, query, where, limit, orderBy, runTransaction, getCountFromServer } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 const GMAIL_ONLY = true;                       // false yaparsan her e-posta adresi kabul edilir
 const $ = s => document.querySelector(s), sheet = $('#sheet'), page = $('#page'), profBtn = $('#profBtn');
@@ -68,10 +80,117 @@ const authMsg = e => ({
 const log = (name, detail = '') => user && addDoc(collection(db, 'events'), {uid:user.uid, who:'passenger', name, detail:String(detail).slice(0,200), t:Date.now()}).catch(() => {});
 const setErr = (m, good) => { const e = $('#err'); if (e) { e.textContent = m; e.className = good ? 'ok' : 'err'; } };
 
+// ---------- Adres arama (Yandex Geocoder anahtarı varsa o, yoksa OpenStreetMap) ----------
+const APP = window.APP_CONFIG || {};
+const YKEY = (APP.YANDEX_API_KEY || '').trim();
+async function geocodeYandex(q, c) {
+  const u = `https://geocode-maps.yandex.ru/1.x/?apikey=${encodeURIComponent(YKEY)}&format=json&lang=tr_TR&results=7&ll=${c.lon},${c.lat}&spn=0.8,0.8&rspn=0&geocode=${encodeURIComponent(q)}`;
+  const res = await fetch(u); if (!res.ok) throw new Error('yandex ' + res.status);
+  const j = await res.json();
+  return (j.response.GeoObjectCollection.featureMember || []).map(m => {
+    const g = m.GeoObject, [lo, la] = g.Point.pos.split(' ').map(Number);
+    return {lat:la, lon:lo, title:g.name, sub:g.description || '', full:(g.metaDataProperty.GeocoderMetaData.text || g.name)};
+  });
+}
+async function geocodeOsm(q, c) {
+  const vb = `${c.lon - 0.6},${c.lat + 0.6},${c.lon + 0.6},${c.lat - 0.6}`;      // yakındaki sonuçlar öne çıksın
+  const res = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&countrycodes=tr&accept-language=tr&addressdetails=1&viewbox=${vb}&q=${encodeURIComponent(q)}`);
+  if (!res.ok) throw new Error('osm ' + res.status);
+  return (await res.json()).map(x => ({lat:+x.lat, lon:+x.lon, title:x.name || x.display_name.split(',')[0], sub:x.display_name, full:x.display_name.split(',').slice(0, 3).join(',')}));
+}
+async function geocode(q) {
+  const c = me ? {lat:me.lat, lon:me.lon} : {lat:map.getCenter().lat, lon:map.getCenter().lng};
+  if (YKEY) { try { return await geocodeYandex(q, c); } catch (e) { console.warn('Yandex araması olmadı, OSM deneniyor', e); } }
+  return geocodeOsm(q, c);
+}
+const reverse = async (lat, lon) => {
+  try {
+    const j = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&accept-language=tr&lat=${lat}&lon=${lon}`).then(x => x.json());
+    return j.display_name ? j.display_name.split(',').slice(0, 3).join(',').slice(0, 120) : '';
+  } catch { return ''; }
+};
+
+// ---------- Mesafe, rota, Yandex ----------
+const hav = (a, b, c, d) => { const R = 6371e3, r = Math.PI / 180, h = Math.sin((c - a) * r / 2) ** 2 + Math.cos(a * r) * Math.cos(c * r) * Math.sin((d - b) * r / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); };
+const fmtM = m => m < 1000 ? Math.max(10, Math.round(m / 10) * 10) + ' m' : (m / 1000).toFixed(1).replace('.', ',') + ' km';
+let ride = null, route = null, routeLine = null, lastRouteAt = 0, lastRouteKey = '', fitKey = '', toastT;
+const routeKeyOf = r => r.status + ':' + (r.status === 'picked_up' ? 'd' : 'p');
+function toast(t) {
+  let e = $('#toast'); if (!e) { e = document.createElement('div'); e.id = 'toast'; e.className = 'toast'; document.body.appendChild(e); }
+  e.textContent = t; e.classList.remove('hide'); clearTimeout(toastT); toastT = setTimeout(() => e.classList.add('hide'), 3500);
+}
+function liveHtml(r) {
+  if (r.driverLat == null) return '<div class="live m" id="live">Şoförün konumu bekleniyor…</div>';
+  const tgt = r.status === 'picked_up' ? r.dest : r.pickup;
+  const straight = hav(r.driverLat, r.driverLon, tgt.lat, tgt.lon);
+  const road = route && route.key === routeKeyOf(r) ? route : null;
+  const label = r.status === 'picked_up' ? 'Varışa kalan' : 'Şoförle aranızdaki mesafe';
+  return `<div class="live" id="live"><b>${label}: <span style="color:var(--cab)">${fmtM(road ? road.m : straight)}</span></b>${road ? ` · yaklaşık ${Math.max(1, Math.round(road.s / 60))} dk` : ' · <span class="m">(kuş uçuşu)</span>'}</div>`;
+}
+async function updateRoute(r) {
+  if (!['accepted', 'picked_up'].includes(r.status) || r.driverLat == null) { routeLine?.remove(); routeLine = null; route = null; lastRouteKey = ''; return; }
+  const key = routeKeyOf(r), tgt = r.status === 'picked_up' ? r.dest : r.pickup, now = Date.now();
+  if (key === lastRouteKey && now - lastRouteAt < 15000) return;       // halka açık OSRM sunucusunu yormamak için en fazla 15 sn'de bir
+  lastRouteKey = key; lastRouteAt = now;
+  try {
+    const j = await fetch(`https://router.project-osrm.org/route/v1/driving/${r.driverLon},${r.driverLat};${tgt.lon},${tgt.lat}?overview=full&geometries=geojson`).then(x => x.json());
+    const rt = j.routes && j.routes[0]; if (!rt || !ride || routeKeyOf(ride) !== key) return;
+    route = {key, m:rt.distance, s:rt.duration};
+    routeLine?.remove();
+    routeLine = L.polyline(rt.geometry.coordinates.map(c => [c[1], c[0]]), {color:'#ffc20e', weight:5, opacity:.85}).addTo(map);
+    if (fitKey !== key) { fitKey = key; map.fitBounds(routeLine.getBounds(), {paddingTopLeft:[40, 70], paddingBottomRight:[40, 320], maxZoom:16}); }
+    const el = $('#live'); if (el) el.outerHTML = liveHtml(ride);
+  } catch {}
+}
+function openYandex(a, b) {                       // a: başlangıç, b: varış  {lat, lon}
+  if (window.RotaPlayApp && window.RotaPlayApp.openYandexRoute) return window.RotaPlayApp.openYandexRoute(a.lat, a.lon, b.lat, b.lon);
+  window.open(`https://yandex.com.tr/maps/?rtext=${a.lat},${a.lon}~${b.lat},${b.lon}&rtt=auto`, '_blank');
+}
+async function copyText(t) {
+  try { if (window.RotaPlayApp && window.RotaPlayApp.copy) { window.RotaPlayApp.copy(t); return true; } await navigator.clipboard.writeText(t); return true; }
+  catch { const ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); let ok = false; try { ok = document.execCommand('copy'); } catch {} ta.remove(); return ok; }
+}
+
+let panelOpen = false;
+const panelEl = document.createElement('div'); panelEl.id = 'panel'; panelEl.className = 'hide'; document.body.appendChild(panelEl);
+
+// ---------- Alt panel: mesaj / sesli arama / şoför profili ----------
+// Android geri tuşu: önce açık paneli / profil sayfasını kapatır
+window.__back = () => { if (panelOpen) { closePanel(); return true; } if (!page.classList.contains('hide')) { page.classList.add('hide'); return true; } return false; };
+function openPanel() { panelOpen = true; panelEl.classList.remove('hide'); renderPanel(); }
+function closePanel() { panelOpen = false; panelEl.classList.add('hide'); }
+panelEl.addEventListener('click', e => { if (e.target === panelEl) closePanel(); });
+function renderPanel() {
+  const r = ride; if (!r || !r.driverUid) return closePanel();
+  panelEl.innerHTML = `<div class="box"><div style="display:flex;justify-content:space-between;align-items:center"><h1 style="margin:0">Şoför profili</h1><button class="link" id="pc">✕ Kapat</button></div><div id="profBody"><p class="m">Yükleniyor…</p></div></div>`;
+  $('#pc').onclick = closePanel;
+  loadDriverProfile(r);
+}
+async function loadDriverProfile(r) {
+  let st = null; try { const s = await getDoc(doc(db, 'driverStats', r.driverUid)); st = s.exists() ? s.data() : null; } catch {}
+  const box = $('#profBody'); if (!box) return;
+  const iban = String(r.driverIban || '').replace(/\s/g, ''), pretty = iban.replace(/(.{4})/g, '$1 ').trim();
+  box.innerHTML = `<div class="card"><div class="kv"><span>Ad Soyad</span><span>${esc(r.driverName)}</span></div>
+    <div class="kv"><span>Plaka</span><span class="plate">${esc(r.driverPlate)}</span></div>
+    <div class="kv"><span>Puan</span><span>${st ? `★ ${Number(st.avg).toFixed(1)} (${st.count} puan)` : 'Henüz puanlanmadı'}</span></div></div>
+    <h2>IBAN</h2><div class="card">${iban ? `<div class="iban">${esc(pretty)}</div><button id="cp">📋 IBAN'ı kopyala</button>` : '<p>Şoför henüz IBAN bilgisi eklememiş.</p>'}
+    <p class="m" style="margin-top:8px">Ücret taksimetrede yazan tutardır. Havale yapacaksan göndermeden önce banka uygulamasında ad soyadın şoförle aynı olduğunu kontrol et.</p></div>`;
+  $('#cp') && ($('#cp').onclick = async () => { const ok = await copyText(iban), b = $('#cp'); if (!b) return; b.textContent = ok ? '✓ Kopyalandı' : 'Kopyalanamadı'; setTimeout(() => { const x = $('#cp'); if (x) x.textContent = "📋 IBAN'ı kopyala"; }, 2000); });
+}
+const actsHtml = r => `<div class="acts"><button class="ghost wide" id="bRoute">${r.status === 'picked_up' ? '🧭 Yolculuk rotasını Yandex\'te aç' : '🚕 Şoför geliyor — rotayı Yandex\'te aç'}</button>
+  <button class="ghost wide" id="bProf">👤 Şoför profili</button></div>`;
+function bindActs(r) {
+  $('#bRoute') && ($('#bRoute').onclick = () => {
+    if (r.driverLat == null) return toast('Şoförün konumu henüz gelmedi, birkaç saniye sonra tekrar dene.');
+    openYandex({lat:r.driverLat, lon:r.driverLon}, r.status === 'picked_up' ? r.dest : r.pickup);
+  });
+  $('#bProf') && ($('#bProf').onclick = openPanel);
+}
+
 // ---------- Oturum akışı ----------
 onAuthStateChanged(auth, u => start(u));
 async function start(u) {
-  user = u; unsub?.(); clearTimeout(expT); page.classList.add('hide'); profBtn.classList.add('hide');
+  user = u; unsub?.(); clearTimeout(expT); page.classList.add('hide'); profBtn.classList.add('hide'); closePanel(); ride = null; updateRoute({status:'x'});
   if (!u) { profile = null; return viewAuth('login'); }
   if (!u.emailVerified) return viewVerify();
   try { profile = await ensureProfile(u); } catch (e) { sheet.innerHTML = `<h1>Hata</h1><p>${esc(e.code || e.message)}</p>`; return; }
@@ -152,6 +271,8 @@ function gotPos(p) {
   me = {lat:p.coords.latitude, lon:p.coords.longitude, text:'Konumum'};
   meM?.remove(); meM = L.marker([me.lat, me.lon], {icon:icon('#46c37b')}).addTo(map); if (!rideId) map.setView([me.lat, me.lon], 15);
   const s = $('#locSt'); if (s) { s.textContent = '📍 Konumun alındı'; s.className = 'ok'; }
+  const la = me.lat, lo = me.lon;                       // şoför "Konumum" yerine gerçek adresi görsün
+  reverse(la, lo).then(t => { if (t && me && me.lat === la && me.lon === lo && me.text === 'Konumum') me.text = t; });
 }
 function locate() {
   const s = $('#locSt'); if (s) { s.textContent = 'Konum alınıyor…'; s.className = 'm'; }
@@ -167,7 +288,7 @@ function locFail() {
 // ---------- Taksi çağırma ----------
 function setDest(lat, lon, text) { dest = {lat, lon, text}; destM?.remove(); destM = L.marker([lat, lon], {icon:icon('#ffc20e')}).addTo(map); const t = $('#destTxt'); if (t) t.textContent = '🏁 ' + (text || 'Haritada seçilen nokta'); }
 function viewForm() {
-  sheet.innerHTML = `<h1>Nereye gidiyorsunuz?</h1><p>Varış noktasını arayın veya haritada dokunun.</p>
+  sheet.innerHTML = `<h1>Nereye gidiyorsunuz?</h1><p><span class="badge">🚕 Yalnızca sarı taksiler</span></p><p>Varış noktasını arayın (mahalle, cadde, işletme adı) veya haritada dokunun.</p>
     <div class="row"><input id="q" placeholder="Adres ara"><button id="go" class="ghost">Ara</button></div><div id="results"></div>
     <p id="destTxt" style="color:var(--text)">${dest ? '🏁 ' + esc(dest.text) : ''}</p>
     <p id="locSt" class="m"></p>
@@ -181,16 +302,23 @@ function viewForm() {
 }
 async function search() {
   const q = $('#q').value.trim(); if (!q) return;
+  const box = $('#results'); box.innerHTML = '<div>Aranıyor…</div>'; box.onclick = null;
   try {
-    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=tr&q=' + encodeURIComponent(q)).then(x => x.json());
-    $('#results').innerHTML = r.map((x, i) => `<div data-i="${i}">${esc(x.display_name)}</div>`).join('') || '<div>Sonuç yok</div>';
-    $('#results').onclick = e => { const i = e.target.dataset.i; if (i == null) return; const x = r[i]; setDest(+x.lat, +x.lon, x.display_name.split(',').slice(0, 2).join(',')); map.setView([x.lat, x.lon], 15); $('#results').innerHTML = ''; };
-  } catch { setErr('Arama yapılamadı, haritada dokunarak seçin.'); }
+    const r = await geocode(q);
+    box.innerHTML = r.map((x, i) => `<div data-i="${i}"><b>${esc(x.title)}</b>${x.sub && x.sub !== x.title ? `<div class="m">${esc(x.sub)}</div>` : ''}</div>`).join('') || '<div>Sonuç yok. Mahalle ve ilçeyi de yazmayı deneyin, ya da haritada dokunun.</div>';
+    box.onclick = e => {
+      const el = e.target.closest('[data-i]'); if (!el) return; const x = r[+el.dataset.i];
+      setDest(x.lat, x.lon, String(x.full || x.title).slice(0, 150)); map.setView([x.lat, x.lon], 16); box.innerHTML = '';
+    };
+  } catch { box.innerHTML = ''; setErr('Arama yapılamadı, haritada dokunarak seçin.'); }
 }
 map.on('click', e => {
   if (rideId || !$('#destTxt')) return;
   if (pickMode) { pickMode = false; me = {lat:e.latlng.lat, lon:e.latlng.lng, text:'Haritada seçilen alış noktası'}; meM?.remove(); meM = L.marker([me.lat, me.lon], {icon:icon('#46c37b')}).addTo(map); const s = $('#locSt'); if (s) { s.textContent = '📍 Alış noktası seçildi'; s.className = 'ok'; } setErr(''); }
-  else setDest(e.latlng.lat, e.latlng.lng, 'Haritada seçilen nokta');
+  else {
+    const la = e.latlng.lat, lo = e.latlng.lng; setDest(la, lo, 'Haritada seçilen nokta');
+    reverse(la, lo).then(t => { if (t && dest && dest.lat === la && dest.lon === lo) { dest.text = t; const d = $('#destTxt'); if (d) d.textContent = '🏁 ' + t; } });
+  }
 });
 async function request() {
   if (!me) return setErr('Önce konumun alınmalı: "Konumumu yenile" veya "Alış noktasını haritadan seç".');
@@ -210,14 +338,15 @@ async function request() {
 function listen() { unsub?.(); unsub = onSnapshot(doc(db, 'rides', rideId), s => s.exists() ? render(s.data()) : reset(), () => reset()); }
 const rideRef = () => doc(db, 'rides', rideId);
 function render(r) {
-  clearTimeout(expT);
+  clearTimeout(expT); ride = r;
+  if (!['accepted', 'picked_up'].includes(r.status) && panelOpen) closePanel();
   if (r.driverLat != null) { const ll = [r.driverLat, r.driverLon]; drvM ? drvM.setLatLng(ll) : drvM = L.marker(ll, {icon:icon('#ffc20e')}).addTo(map); } else if (drvM) { drvM.remove(); drvM = null; }
   const who = r.driverUid ? `<p><span class="plate">${esc(r.driverPlate)}</span> &nbsp;${esc(r.driverName)}</p>` : '';
   if (r.status === 'searching') {
     sheet.innerHTML = `<h1>${r.driverCancelled ? 'Şoför iptal etti' : 'Yakındaki taksiler aranıyor…'}</h1><p>${r.driverCancelled ? 'Sizin için yeni bir taksi aranıyor.' : 'Konumunuza yakın çevrimiçi taksilere bildirim gidiyor. Kabul eden şoför burada görünecek.'}</p><button class="ghost" id="cx">Vazgeç</button>`;
     expT = setTimeout(() => updateDoc(rideRef(), {status:'expired'}).catch(() => {}), Math.max(0, r.createdAt + 90000 - Date.now()));
-  } else if (r.status === 'accepted') sheet.innerHTML = `<h1>Taksiniz yolda</h1>${who}<p>Şoför konumunuza geliyor. Haritada canlı görebilirsiniz.</p><button class="ghost" id="cx">İptal et</button>`;
-  else if (r.status === 'picked_up') sheet.innerHTML = `<h1>İyi yolculuklar</h1>${who}<p>Varış: ${esc(r.dest.text)}</p>`;
+  } else if (r.status === 'accepted') { sheet.innerHTML = `<h1>Taksiniz yolda</h1>${who}${liveHtml(r)}${actsHtml(r)}<button class="ghost" id="cx">İptal et</button>`; bindActs(r); }
+  else if (r.status === 'picked_up') { sheet.innerHTML = `<h1>İyi yolculuklar</h1>${who}<p>Varış: ${esc(r.dest.text)}</p>${liveHtml(r)}${actsHtml(r)}`; bindActs(r); }
   else if (r.status === 'completed') {
     sheet.innerHTML = `<h1>Yolculuk bitti</h1><p>Taksimetre tutarı</p><div class="big">${money(r.fare)}</div>${who}
       ${r.driverRating ? '<p>Puanınız için teşekkürler.</p><button id="nw">Yeni yolculuk</button>' : `<p>Şoförü puanlayın</p><div class="stars">${[1,2,3,4,5].map(n => `<button data-n="${n}">★</button>`).join('')}</div><p class="err" id="err"></p><button id="sv">Puanı gönder</button><button class="link" id="sk">Şimdi değil</button>`}`;
@@ -227,6 +356,8 @@ function render(r) {
   } else sheet.innerHTML = `<h1>${r.status === 'expired' ? 'Şu an müsait taksi bulunamadı' : 'Yolculuk iptal edildi'}</h1><button id="nw">Tekrar dene</button>`;
   $('#cx') && ($('#cx').onclick = () => updateDoc(rideRef(), {status:'cancelled'}).then(() => log('yolcu_iptal', rideId)).catch(() => {}));
   $('#nw') && ($('#nw').onclick = reset);
+  if (panelOpen) loadDriverProfile(r);
+  updateRoute(r);
 }
 // Puan hem yolculuğa hem şoförün genel puanına tek işlemde yazılır
 async function rateDriver(r, n) {
@@ -240,7 +371,7 @@ async function rateDriver(r, n) {
     log('soforu_puanladi', n + ' yıldız');
   } catch (e) { setErr('Puan gönderilemedi (' + (e.code || e.message) + ')'); }
 }
-function reset() { unsub?.(); clearTimeout(expT); if (user) localStorage.removeItem('rideId:' + user.uid); rideId = null; dest = null; stars = 0; destM?.remove(); drvM?.remove(); drvM = null; page.classList.add('hide'); viewForm(); }
+function reset() { unsub?.(); clearTimeout(expT); closePanel(); ride = null; updateRoute({status:'x'}); fitKey = ''; if (user) localStorage.removeItem('rideId:' + user.uid); rideId = null; dest = null; stars = 0; destM?.remove(); drvM?.remove(); drvM = null; page.classList.add('hide'); viewForm(); }
 
 // ---------- Profil ----------
 profBtn.onclick = viewProfile;

@@ -20,8 +20,9 @@ input{width:100%;background:var(--panel);color:var(--text);margin:6px 0}button{b
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import { getFirestore, collection, getDocs, doc, updateDoc, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { getStorage, ref, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js";
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const app=initializeApp(window.FIREBASE_CONFIG),auth=getAuth(app),db=getFirestore(app);
+const app=initializeApp(window.FIREBASE_CONFIG),auth=getAuth(app),db=getFirestore(app),storage=getStorage(app);
 const tl=t=>t?new Date(t).toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'-';
 const money=n=>Number(n).toLocaleString('tr-TR',{minimumFractionDigits:2})+' ₺';
 const label={approved:'Onaylı',pending:'Onay bekliyor',blocked:'Engelli'};
@@ -39,8 +40,26 @@ async function show(){
       $('#msg').textContent=`${a.length} şoför`;
       $('#list').innerHTML=a.map(d=>{const mine=rs.filter(r=>r.driverUid===d.id),st=mine.map(r=>r.driverRating).filter(Boolean),cn=rs.filter(r=>(r.declined||[]).includes(d.id)).length;
         return `<div class="d"><b>${esc(d.name)}</b> <span class="tag ${d.status}">${label[d.status]||d.status}</span>
+        <div class="m">${esc(d.email||'-')} · IBAN: ${esc(d.iban||'yok')}</div>
         <div class="m">${esc(d.plate)} · ${esc(d.phone)}${st.length?` · ★ ${(st.reduce((t,x)=>t+x,0)/st.length).toFixed(1)} (${st.length})`:''}${cn?` · ${cn} iptal`:''}</div>
+        <div class="m">Belge durumu: ${esc(d.docsStatus||'yüklenmedi')} · Otomatik ön kontrol: ${esc(d.autoCheck||'yapılmadı')} · Ruhsat OCR/plaka: ${esc(d.plateOcrResult||'yapılmadı')}</div>
+        <div class="m" data-docs="${d.id}">Belge bağlantıları yükleniyor…</div>
         <div class="row">${d.status!=='approved'?`<button data-id="${d.id}" data-s="approved">Onayla</button>`:''}${d.status!=='blocked'?`<button class="g" data-id="${d.id}" data-s="blocked">Engelle</button>`:''}</div></div>`}).join('')||'<p class="m">Henüz şoför yok.</p>';
+      for (const d of a) {
+        const box = document.querySelector(`[data-docs="${CSS.escape(d.id)}"]`);
+        if (!box) continue;
+        const docs = [
+          ['Kimlik', d.identityPath], ['Ehliyet', d.licensePath],
+          ['Ruhsat ön', d.registrationFrontPath], ['Ruhsat arka', d.registrationBackPath]
+        ];
+        const links = [];
+        for (const [label, path] of docs) {
+          if (!path) { links.push(`${label}: eksik`); continue; }
+          try { const url = await getDownloadURL(ref(storage, path)); links.push(`<a style="color:var(--cab);margin-right:10px" target="_blank" rel="noopener" href="${esc(url)}">${label} fotoğrafını aç</a>`); }
+          catch { links.push(`${label}: erişilemiyor`); }
+        }
+        box.innerHTML = links.join(' · ');
+      }
     }else if(tab===2){
       const a=await rides(),done=a.filter(x=>x.status==='completed'),tot=done.reduce((t,x)=>t+Number(x.fare||0),0);
       $('#msg').textContent=`${done.length} tamamlanan sefer · toplam taksimetre ${money(tot)}`;
@@ -58,5 +77,16 @@ async function show(){
 }
 $('#go').onclick=async()=>{try{await signInWithEmailAndPassword(auth,$('#em').value.trim(),$('#pw').value);$('#login').style.display='none';$('#app').style.display='block';show()}catch(e){$('#err').textContent='Giriş başarısız.'}};
 for(const n of [1,2,3])$('#t'+n).onclick=()=>{tab=n;show()};
-$('#list').onclick=async e=>{const id=e.target.dataset.id;if(!id)return;await updateDoc(doc(db,'drivers',id),{status:e.target.dataset.s});show()};
+$('#list').onclick=async e=>{
+  const id=e.target.dataset.id;if(!id)return;
+  const next=e.target.dataset.s;
+  if(next==='approved'){
+    const snap=await getDocs(query(collection(db,'drivers')));
+    const d=snap.docs.find(x=>x.id===id)?.data();
+    const required=['identityPath','licensePath','registrationFrontPath','registrationBackPath'];
+    if(!d || required.some(k=>!d[k])) { $('#err').textContent='Onay verilemedi: dört belgenin tamamı yüklenmeli.'; return; }
+    if(!confirm('Belgeleri gerçekten incelediniz mi? Fotoğrafları resmî kaynaklardan doğrulamak yöneticinin sorumluluğundadır. Onay verilsin mi?')) return;
+  }
+  await updateDoc(doc(db,'drivers',id),{status:next});show()
+};
 </script></body></html>
