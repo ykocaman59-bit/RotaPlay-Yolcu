@@ -5,9 +5,14 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
+    <queries>
+        <package android:name="ru.yandex.yandexmaps" />
+        <package android:name="ru.yandex.yandexnavi" />
+    </queries>
+
     <application
         android:icon="@drawable/ic_launcher"
-        android:label="RotaPlay Taksi"
+        android:label="RotaPlay Sarı Taksi"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
         <activity
