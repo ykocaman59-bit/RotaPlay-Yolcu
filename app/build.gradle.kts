@@ -10,7 +10,7 @@ android {
     defaultConfig {
         applicationId = "com.rotaplay.yolcu"
         minSdk = 24
-        targetSk = 34
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0"
     }
@@ -23,4 +23,3 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 }
-
