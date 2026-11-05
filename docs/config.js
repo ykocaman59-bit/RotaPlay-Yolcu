@@ -10,10 +10,19 @@ window.FIREBASE_CONFIG = {
 
 // Uygulama ayarları
 window.APP_CONFIG = {
-  // Yandex adres araması için anahtar (ücretsiz): https://developer.tech.yandex.com → "Get a key" →
+  // Harita görüntüsü: "openfreemap" (varsayılan, ücretsiz, anahtarsız) veya "osm" (düz OpenStreetMap, eski telefonlarda daha hafif).
+  MAP_PROVIDER: "openfreemap",
+
+  // Yandex adres araması (Geocoder) anahtarı. DİKKAT: Yandex güncel fiyat sayfasına göre ÜCRETLİDİR (yıllık lisans, en düşük paket binlerce dolar).
+  // Almak istersen: https://developer.tech.yandex.com →
   // "JavaScript API and HTTP Geocoder". Boş bırakırsan OpenStreetMap araması kullanılır.
-  // Anahtarın aktif olması ~15 dk sürebilir. Ücretsiz sürümün şartlarını (özellikle ticari kullanım) kendin kontrol et.
+  // Anahtarın aktif olması ~15 dk sürebilir. Boş bırakmak sorun değildir.
   YANDEX_API_KEY: "",
+
+  // Yandex HARİTA görüntüsü için Tiles API anahtarı: https://developer.tech.yandex.com → "Tiles API" → "New key".
+  // (Adres arama anahtarından AYRI bir üründür.) Boş bırakırsan OpenStreetMap haritası görünür.
+  // Yandex Tiles API ÜCRETLİDİR (güncel sayfaya göre yıllık lisans, en düşük paket yaklaşık 450-585 USD). Yandex logosu da zorunludur.
+  YANDEX_TILES_KEY: "",
 
   // Sesli arama için sunucular. STUN ücretsizdir. Çok katı mobil ağlarda bazı aramalar bağlanamazsa
   // buraya bir TURN sunucusu ekleyebilirsin: {urls: "turn:...", username: "...", credential: "..."}

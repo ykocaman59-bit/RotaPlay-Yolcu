@@ -60,7 +60,33 @@ const money = n => Number(n).toLocaleString('tr-TR', {minimumFractionDigits:2}) 
 
 // ---------- Harita ----------
 const map = L.map('map', {zoomControl:false}).setView([41.0082, 28.9784], 12);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'© OpenStreetMap'}).addTo(map);
+// Harita altlığı: varsayılan OpenFreeMap (ücretsiz, anahtarsız, ticari kullanıma açık); olmazsa OpenStreetMap.
+// config.js'e Yandex Tiles API anahtarı (ücretli) yazılırsa Yandex Harita kullanılır.
+const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'© OpenStreetMap'});
+const loadScript = src => new Promise((ok, err) => { const e = document.createElement('script'); e.src = src; e.onload = ok; e.onerror = () => err(new Error('script ' + src)); document.head.appendChild(e); });
+const loadCss = href => { const e = document.createElement('link'); e.rel = 'stylesheet'; e.href = href; document.head.appendChild(e); };
+async function addVectorMap() {
+  try {
+    const c = document.createElement('canvas');
+    if (!(c.getContext('webgl2') || c.getContext('webgl'))) throw new Error('WebGL yok');
+    loadCss('https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css');
+    await loadScript('https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js');
+    await loadScript('https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js');
+    if (!L.maplibreGL) throw new Error('maplibre-gl-leaflet yüklenemedi');
+    L.maplibreGL({style:'https://tiles.openfreemap.org/styles/liberty',
+      attribution:'<a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> © <a href="https://openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> Data from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'}).addTo(map);
+  } catch (e) { console.warn('Vektör harita açılamadı, OpenStreetMap kullanılıyor', e); osmLayer.addTo(map); }
+}
+const YTK = String((window.APP_CONFIG || {}).YANDEX_TILES_KEY || '').trim();
+const MAPP = String((window.APP_CONFIG || {}).MAP_PROVIDER || 'openfreemap').toLowerCase();
+if (YTK) {
+  const yLayer = L.tileLayer(`https://tiles.api-maps.yandex.ru/v1/tiles/?apikey=${encodeURIComponent(YTK)}&lang=tr_TR&x={x}&y={y}&z={z}&l=map&projection=web_mercator`,
+    {maxZoom:19, attribution:'<a href="https://yandex.com.tr/maps" target="_blank" rel="noopener">Yandex Harita</a>'}).addTo(map);
+  let okT = 0, badT = 0, fell = false;
+  yLayer.on('tileload', () => okT++);
+  yLayer.on('tileerror', () => { badT++; if (!okT && badT >= 4 && !fell) { fell = true; map.removeLayer(yLayer); addVectorMap(); } });   // anahtar hatalıysa ücretsiz haritaya dön
+} else if (MAPP === 'osm') osmLayer.addTo(map);
+else addVectorMap();
 const icon = c => L.divIcon({className:'', html:`<div style="width:18px;height:18px;border-radius:50%;background:${c};border:3px solid #fff;box-shadow:0 0 6px #000a"></div>`, iconSize:[18,18]});
 
 // ---------- Firebase ----------
@@ -92,16 +118,63 @@ async function geocodeYandex(q, c) {
     return {lat:la, lon:lo, title:g.name, sub:g.description || '', full:(g.metaDataProperty.GeocoderMetaData.text || g.name)};
   });
 }
-async function geocodeOsm(q, c) {
+// Türkçe kısaltmaları aç: "atatürk cd. no:12" -> "atatürk caddesi 12"
+function normQ(q) {
+  return q.toLocaleLowerCase('tr').replace(/[.,;]/g, ' ')
+    .replace(/\b(cad|cd)\b/g, 'caddesi').replace(/\b(sok|sk)\b/g, 'sokak').replace(/\b(mah|mh)\b/g, 'mahallesi')
+    .replace(/\b(bulv|blv|bul)\b/g, 'bulvarı').replace(/\bno\s*:?\s*(\d)/g, '$1').replace(/\s+/g, ' ').trim();
+}
+const stripNo = q => q.replace(/\b\d+\s*\/?\s*[a-zA-Z]?\s*$/, '').trim();           // sondaki kapı numarasını at
+async function nominatim(q, c) {
   const vb = `${c.lon - 0.6},${c.lat + 0.6},${c.lon + 0.6},${c.lat - 0.6}`;      // yakındaki sonuçlar öne çıksın
   const res = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&countrycodes=tr&accept-language=tr&addressdetails=1&viewbox=${vb}&q=${encodeURIComponent(q)}`);
   if (!res.ok) throw new Error('osm ' + res.status);
   return (await res.json()).map(x => ({lat:+x.lat, lon:+x.lon, title:x.name || x.display_name.split(',')[0], sub:x.display_name, full:x.display_name.split(',').slice(0, 3).join(',')}));
 }
+async function geocodeOsm(q, c) {
+  const n = normQ(q);
+  let r = await nominatim(n, c);
+  if (!r.length) { const s2 = stripNo(n); if (s2 && s2 !== n) { r = await nominatim(s2, c); r.forEach(x => x.sub = 'Kapı numarası bulunamadı, sokağın konumu. Pini sürükleyip düzeltin. ' + x.sub); } }
+  return r;
+}
+async function geocodePhoton(q, c) {            // ikinci ücretsiz kaynak (OpenStreetMap tabanlı, farklı arama motoru)
+  const res = await fetch(`https://photon.komoot.io/api/?limit=8&lat=${c.lat}&lon=${c.lon}&q=${encodeURIComponent(normQ(q))}`);
+  if (!res.ok) throw new Error('photon ' + res.status);
+  const j = await res.json();
+  return (j.features || []).filter(f => !f.properties.countrycode || f.properties.countrycode === 'TR').map(f => {
+    const p = f.properties, [lo, la] = f.geometry.coordinates;
+    const line1 = [p.street || p.name, p.housenumber].filter(Boolean).join(' ');
+    const line2 = [p.district, p.city || p.county, p.state].filter(Boolean).join(', ');
+    return {lat:la, lon:lo, title:line1 || p.name || q, sub:line2, full:[line1, line2].filter(Boolean).join(', ')};
+  });
+}
+// Yapıştırılan koordinat ya da harita bağlantısından konumu çıkar (Yandex: ll=boylam,enlem · Google: @enlem,boylam)
+function parseCoords(q) {
+  const num = '(-?\\d{1,3}(?:[.,]\\d+)?)';
+  const inTR = (la, lo) => la > 35 && la < 43 && lo > 25 && lo < 45;
+  const fix = x => parseFloat(String(x).replace(',', '.'));
+  let m;
+  if ((m = q.match(new RegExp('[?&](?:ll|pt)=' + num + '(?:%2C|,)' + num)))) { const lo = fix(m[1]), la = fix(m[2]); if (inTR(la, lo)) return {lat:la, lon:lo}; }
+  if ((m = q.match(new RegExp('@' + num + ',' + num)))) { const la = fix(m[1]), lo = fix(m[2]); if (inTR(la, lo)) return {lat:la, lon:lo}; }
+  if ((m = q.match(new RegExp('!3d' + num + '!4d' + num)))) { const la = fix(m[1]), lo = fix(m[2]); if (inTR(la, lo)) return {lat:la, lon:lo}; }
+  if ((m = q.match(new RegExp('^\\s*' + num + '\\s*[,;\\s]\\s*' + num + '\\s*$')))) {
+    const a1 = fix(m[1]), a2 = fix(m[2]);
+    if (inTR(a1, a2)) return {lat:a1, lon:a2};
+    if (inTR(a2, a1)) return {lat:a2, lon:a1};
+  }
+  return null;
+}
 async function geocode(q) {
   const c = me ? {lat:me.lat, lon:me.lon} : {lat:map.getCenter().lat, lon:map.getCenter().lng};
-  if (YKEY) { try { return await geocodeYandex(q, c); } catch (e) { console.warn('Yandex araması olmadı, OSM deneniyor', e); } }
-  return geocodeOsm(q, c);
+  if (YKEY) { try { const r = await geocodeYandex(q, c); if (r.length) return r; } catch (e) { console.warn('Yandex araması olmadı, ücretsiz kaynaklar deneniyor', e); } }
+  // Photon (hatalı yazımı ve eksik kelimeyi tolere eder) + Nominatim (düzenli adres) birlikte; Photon sonuçları öne alınır
+  const [ph, nm] = await Promise.allSettled([geocodePhoton(q, c), geocodeOsm(q, c)]);
+  if (ph.status === 'rejected') console.warn('Photon araması olmadı', ph.reason);
+  if (nm.status === 'rejected') console.warn('OSM araması olmadı', nm.reason);
+  const all = [...(ph.value || []), ...(nm.value || [])], seen = new Set(), out = [];
+  for (const x of all) { const k = x.lat.toFixed(4) + ',' + x.lon.toFixed(4); if (!seen.has(k)) { seen.add(k); out.push(x); } }
+  if (!out.length && ph.status === 'rejected' && nm.status === 'rejected') throw new Error('arama servisleri yanıt vermedi');
+  return out.slice(0, 10);
 }
 const reverse = async (lat, lon) => {
   try {
@@ -274,19 +347,45 @@ function gotPos(p) {
   const la = me.lat, lo = me.lon;                       // şoför "Konumum" yerine gerçek adresi görsün
   reverse(la, lo).then(t => { if (t && me && me.lat === la && me.lon === lo && me.text === 'Konumum') me.text = t; });
 }
+window.__nativePos = (la, lo, acc) => gotPos({coords:{latitude:la, longitude:lo, accuracy:acc}});   // Android uygulamasından gelen konum
+window.__nativePosErr = code => locFail(code);
 function locate() {
   const s = $('#locSt'); if (s) { s.textContent = 'Konum alınıyor…'; s.className = 'm'; }
+  if (window.RotaPlayApp && window.RotaPlayApp.getLocation) return window.RotaPlayApp.getLocation();      // uygulama içinde: doğrudan telefonun konum servisi
   if (!navigator.geolocation) return locFail();
-  navigator.geolocation.getCurrentPosition(gotPos, () =>               // önce hızlı (ağ tabanlı) konum, olmazsa GPS
+  navigator.geolocation.getCurrentPosition(gotPos, () =>               // tarayıcıda: önce hızlı (ağ tabanlı) konum, olmazsa GPS
     navigator.geolocation.getCurrentPosition(gotPos, locFail, {enableHighAccuracy:true, timeout:20000, maximumAge:0}),
     {enableHighAccuracy:false, timeout:8000, maximumAge:120000});
 }
-function locFail() {
-  const s = $('#locSt'); if (s) { s.textContent = 'Konum alınamadı. Telefonun konumunu açıp izin ver, ya da alış noktasını haritadan seç.'; s.className = 'err'; }
+function locFail(e) {
+  const s = $('#locSt'); if (!s) return;
+  const code = typeof e === 'string' ? e : (e && e.code === 1 ? 'denied' : '');
+  const app = window.RotaPlayApp;
+  s.className = 'err';
+  if (code === 'off') {
+    s.innerHTML = 'Telefonun konumu (GPS) kapalı. Açıp tekrar dene. ' + (app && app.openLocationSettings ? '<button class="ghost" id="locSet">Konum ayarlarını aç</button>' : '');
+    $('#locSet') && ($('#locSet').onclick = () => app.openLocationSettings());
+  } else if (code === 'denied') {
+    s.innerHTML = 'Konum izni verilmemiş. Ayarlardan konum iznini aç, sonra "Konumumu yenile"ye bas. ' + (app && app.openAppSettings ? '<button class="ghost" id="locSet">Uygulama ayarlarını aç</button>' : '');
+    $('#locSet') && ($('#locSet').onclick = () => app.openAppSettings());
+  } else if (code === 'timeout') {
+    s.textContent = 'Konum zamanında alınamadı. Açık alanda tekrar dene ya da alış noktasını haritadan seç.';
+  } else {
+    s.textContent = 'Konum alınamadı. Telefonun konumunu açıp izin ver, ya da alış noktasını haritadan seç.';
+  }
 }
 
 // ---------- Taksi çağırma ----------
-function setDest(lat, lon, text) { dest = {lat, lon, text}; destM?.remove(); destM = L.marker([lat, lon], {icon:icon('#ffc20e')}).addTo(map); const t = $('#destTxt'); if (t) t.textContent = '🏁 ' + (text || 'Haritada seçilen nokta'); }
+function setDest(lat, lon, text) {
+  dest = {lat, lon, text}; destM?.remove();
+  destM = L.marker([lat, lon], {icon:icon('#ffc20e'), draggable:!rideId}).addTo(map);
+  destM.on('dragend', () => {                                  // pini sürükleyerek tam kapı yerini düzelt
+    const p = destM.getLatLng(), la = p.lat, lo = p.lng; dest = {lat:la, lon:lo, text:'Haritada seçilen nokta'};
+    const t = $('#destTxt'); if (t) t.textContent = '🏁 Haritada seçilen nokta';
+    reverse(la, lo).then(tx => { if (tx && dest && dest.lat === la && dest.lon === lo) { dest.text = tx; const d = $('#destTxt'); if (d) d.textContent = '🏁 ' + tx; } });
+  });
+  const t = $('#destTxt'); if (t) t.textContent = '🏁 ' + (text || 'Haritada seçilen nokta');
+}
 function viewForm() {
   sheet.innerHTML = `<h1>Nereye gidiyorsunuz?</h1><p><span class="badge">🚕 Yalnızca sarı taksiler</span></p><p>Varış noktasını arayın (mahalle, cadde, işletme adı) veya haritada dokunun.</p>
     <div class="row"><input id="q" placeholder="Adres ara"><button id="go" class="ghost">Ara</button></div><div id="results"></div>
@@ -295,22 +394,45 @@ function viewForm() {
     <div class="two"><button class="ghost" id="rl">Konumumu yenile</button><button class="ghost" id="pk">Alış noktasını haritadan seç</button></div>
     <p class="err" id="err"></p><button id="call">Taksi çağır</button>`;
   $('#go').onclick = search;
-  $('#q').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });      // (önceki sürümde silme tuşu engelleniyordu)
+  $('#q').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+  $('#q').addEventListener('input', suggest);      // (önceki sürümde silme tuşu engelleniyordu)
   $('#call').onclick = request; $('#rl').onclick = () => { pickMode = false; locate(); };
   $('#pk').onclick = () => { pickMode = true; setErr('Haritada alış noktasına dokunun.', true); };
   locate();
 }
+function renderResults(r) {
+  const box = $('#results'); if (!box) return;
+  box.innerHTML = r.map((x, i) => `<div data-i="${i}"><b>${esc(x.title)}</b>${x.sub && x.sub !== x.title ? `<div class="m">${esc(x.sub)}</div>` : ''}</div>`).join('') || '<div>Sonuç yok. Mahalle ve ilçeyi de yazmayı deneyin. Olmazsa haritada varış noktasına dokunun ya da Yandex Harita\'dan kopyaladığınız koordinatı/bağlantıyı buraya yapıştırın.</div>';
+  box.onclick = e => {
+    const el = e.target.closest('[data-i]'); if (!el) return; const x = r[+el.dataset.i];
+    setDest(x.lat, x.lon, String(x.full || x.title).slice(0, 150)); map.setView([x.lat, x.lon], 16); box.innerHTML = ''; box.onclick = null; toast('Yer tam doğru değilse pini sürükleyin.');
+  };
+}
 async function search() {
+  clearTimeout(sugT);
   const q = $('#q').value.trim(); if (!q) return;
   const box = $('#results'); box.innerHTML = '<div>Aranıyor…</div>'; box.onclick = null;
-  try {
-    const r = await geocode(q);
-    box.innerHTML = r.map((x, i) => `<div data-i="${i}"><b>${esc(x.title)}</b>${x.sub && x.sub !== x.title ? `<div class="m">${esc(x.sub)}</div>` : ''}</div>`).join('') || '<div>Sonuç yok. Mahalle ve ilçeyi de yazmayı deneyin, ya da haritada dokunun.</div>';
-    box.onclick = e => {
-      const el = e.target.closest('[data-i]'); if (!el) return; const x = r[+el.dataset.i];
-      setDest(x.lat, x.lon, String(x.full || x.title).slice(0, 150)); map.setView([x.lat, x.lon], 16); box.innerHTML = '';
-    };
-  } catch { box.innerHTML = ''; setErr('Arama yapılamadı, haritada dokunarak seçin.'); }
+  const pc = parseCoords(q);
+  if (pc) {                                                      // Yandex/Google bağlantısı ya da koordinat yapıştırıldı
+    setDest(pc.lat, pc.lon, 'Yapıştırılan konum'); map.setView([pc.lat, pc.lon], 17); box.innerHTML = ''; toast('Konum işaretlendi. Gerekirse pini sürükleyin.');
+    reverse(pc.lat, pc.lon).then(t => { if (t && dest && dest.lat === pc.lat && dest.lon === pc.lon) { dest.text = t; const d = $('#destTxt'); if (d) d.textContent = '🏁 ' + t; } });
+    return;
+  }
+  try { renderResults(await geocode(q)); } catch { box.innerHTML = ''; setErr('Arama yapılamadı, haritada dokunarak seçin.'); }
+}
+// Yazarken öneri: Photon'un halka açık sunucusunu yormamamak için 3+ harf ve yazmayı bıraktıktan 0,7 sn sonra
+let sugT;
+function suggest() {
+  clearTimeout(sugT);
+  const inp = $('#q'); if (!inp) return; const q = inp.value.trim();
+  if (q.length < 3 || parseCoords(q)) return;
+  sugT = setTimeout(async () => {
+    try {
+      const c = me ? {lat:me.lat, lon:me.lon} : {lat:map.getCenter().lat, lon:map.getCenter().lng};
+      const r = await geocodePhoton(q, c);
+      if (r.length && $('#q') && $('#q').value.trim() === q) renderResults(r);
+    } catch {}
+  }, 700);
 }
 map.on('click', e => {
   if (rideId || !$('#destTxt')) return;
@@ -405,4 +527,3 @@ async function viewProfile() {
   } catch (e) { page.innerHTML = `<div class="in"><button class="ghost" id="back">← Geri</button><h1>Profil yüklenemedi</h1><p>${esc(e.code || e.message)}</p></div>`; $('#back').onclick = () => page.classList.add('hide'); }
 }
 </script></body></html>
-
