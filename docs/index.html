@@ -47,6 +47,7 @@ button:disabled{opacity:.5}button:focus-visible{outline:3px solid #fff}
 <div class="page hide" id="page"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script src="config.js"></script>
+<script src="places.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendEmailVerification, sendPasswordResetEmail, signOut, reload } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
@@ -164,17 +165,53 @@ function parseCoords(q) {
   }
   return null;
 }
+// ---------- Yerel liste: 81 il merkezi + İstanbul ilçe/mahalleleri (docs/places.js, YAKLAŞIK konumlar) ----------
+const TRN = s => String(s).toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/ş/g, 's').replace(/ç/g, 'c').replace(/ğ/g, 'g').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/[^a-z0-9]+/g, ' ').trim();
+const STOP = new Set(['mahallesi', 'mahalle', 'mah', 'mh', 'ilcesi', 'ilce', 'ili', 'il', 'istanbul']);
+let localIdx = null;
+function localIndex() {
+  if (localIdx) return localIdx;
+  const P = window.PLACES || {}; localIdx = [];
+  (P.il || []).forEach(([, n, la, lo]) => localIdx.push({k:TRN(n), n:TRN(n), r:0, lat:la, lon:lo, zoom:12, title:n, sub:'İl merkezi · yaklaşık konum', full:n}));
+  (P.ilce || []).forEach(([n, la, lo]) => localIdx.push({k:TRN(n + ' istanbul'), n:TRN(n), r:1, lat:la, lon:lo, zoom:13, title:n + ', İstanbul', sub:'İlçe merkezi · yaklaşık konum', full:n + ', İstanbul'}));
+  (P.mah || []).forEach(([ic, n, la, lo, q]) => localIdx.push({k:TRN(n + ' mahallesi ' + ic + ' istanbul'), n:TRN(n), r:2, lat:la, lon:lo, zoom:15, q:!!q,
+    title:n + ' Mahallesi', sub:ic + ', İstanbul · mahalle merkezi, yaklaşık konum' + (q ? ' · ⚠ konum doğrulanmadı' : ''), full:n + ' Mahallesi, ' + ic + ', İstanbul'}));
+  return localIdx;
+}
+function localSearch(q) {
+  const qn = TRN(q); if (qn.length < 2) return [];
+  const tokens = qn.split(' ').filter(t => t && !STOP.has(t));
+  const res = [];
+  for (const x of localIndex()) {
+    let score = 0;
+    if (x.r === 0) { if (x.n === qn) score = 100; else if (x.n.startsWith(qn)) score = 40; }    // il: yalnızca ada göre
+    else if (tokens.length && tokens.every(t => (' ' + x.k).includes(' ' + t))) score = x.n === tokens.join(' ') ? 90 : (x.n.startsWith(tokens[0]) ? 30 : 10);
+    if (score) res.push({...x, score, approx:true, exact:score >= 90});
+  }
+  return res.sort((a, b) => b.score - a.score || a.r - b.r).slice(0, 6);
+}
+const kmBetween = (a, b, c, d) => { const p = Math.PI / 180, x = Math.sin((c - a) * p / 2) ** 2 + Math.cos(a * p) * Math.cos(c * p) * Math.sin((d - b) * p / 2) ** 2; return 12742 * Math.asin(Math.sqrt(x)); };
+// Uzak (Photon/Nominatim) ve yerel sonuçları birleştir: birebir il/ilçe adı en başa, mahalleler sona; aynı yere düşenler tekrarlanmaz
+function mergeResults(remote, local) {
+  const out = [];
+  for (const x of remote) if (!out.some(o => kmBetween(o.lat, o.lon, x.lat, x.lon) < 0.05)) out.push(x);
+  const first = [], last = [];
+  for (const l of local) {
+    if (out.some(o => kmBetween(o.lat, o.lon, l.lat, l.lon) < 0.4)) continue;
+    (l.exact && l.r < 2 ? first : last).push(l);
+  }
+  return [...first, ...out, ...last].slice(0, 10);
+}
 async function geocode(q) {
   const c = me ? {lat:me.lat, lon:me.lon} : {lat:map.getCenter().lat, lon:map.getCenter().lng};
-  if (YKEY) { try { const r = await geocodeYandex(q, c); if (r.length) return r; } catch (e) { console.warn('Yandex araması olmadı, ücretsiz kaynaklar deneniyor', e); } }
-  // Photon (hatalı yazımı ve eksik kelimeyi tolere eder) + Nominatim (düzenli adres) birlikte; Photon sonuçları öne alınır
+  const loc = localSearch(q);
+  if (YKEY) { try { const r = await geocodeYandex(q, c); if (r.length) return mergeResults(r, loc); } catch (e) { console.warn('Yandex araması olmadı, ücretsiz kaynaklar deneniyor', e); } }
+  // Photon (hatalı yazımı ve eksik kelimeyi tolere eder) + Nominatim (düzenli adres) birlikte
   const [ph, nm] = await Promise.allSettled([geocodePhoton(q, c), geocodeOsm(q, c)]);
   if (ph.status === 'rejected') console.warn('Photon araması olmadı', ph.reason);
   if (nm.status === 'rejected') console.warn('OSM araması olmadı', nm.reason);
-  const all = [...(ph.value || []), ...(nm.value || [])], seen = new Set(), out = [];
-  for (const x of all) { const k = x.lat.toFixed(4) + ',' + x.lon.toFixed(4); if (!seen.has(k)) { seen.add(k); out.push(x); } }
-  if (!out.length && ph.status === 'rejected' && nm.status === 'rejected') throw new Error('arama servisleri yanıt vermedi');
-  return out.slice(0, 10);
+  if (!loc.length && ph.status === 'rejected' && nm.status === 'rejected') throw new Error('arama servisleri yanıt vermedi');
+  return mergeResults([...(ph.value || []), ...(nm.value || [])], loc);
 }
 const reverse = async (lat, lon) => {
   try {
@@ -405,7 +442,9 @@ function renderResults(r) {
   box.innerHTML = r.map((x, i) => `<div data-i="${i}"><b>${esc(x.title)}</b>${x.sub && x.sub !== x.title ? `<div class="m">${esc(x.sub)}</div>` : ''}</div>`).join('') || '<div>Sonuç yok. Mahalle ve ilçeyi de yazmayı deneyin. Olmazsa haritada varış noktasına dokunun ya da Yandex Harita\'dan kopyaladığınız koordinatı/bağlantıyı buraya yapıştırın.</div>';
   box.onclick = e => {
     const el = e.target.closest('[data-i]'); if (!el) return; const x = r[+el.dataset.i];
-    setDest(x.lat, x.lon, String(x.full || x.title).slice(0, 150)); map.setView([x.lat, x.lon], 16); box.innerHTML = ''; box.onclick = null; toast('Yer tam doğru değilse pini sürükleyin.');
+    setDest(x.lat, x.lon, String(x.full || x.title).slice(0, 135) + (x.approx ? ' (yaklaşık)' : '')); if (x.approx) dest.approx = true;
+    map.setView([x.lat, x.lon], x.zoom || 16); box.innerHTML = ''; box.onclick = null;
+    toast(x.q ? 'Bu konum doğrulanmadı. Pini tam yere sürükleyin.' : x.approx ? 'Bu bölgenin yaklaşık merkezi. Pini tam yere sürükleyin.' : 'Yer tam doğru değilse pini sürükleyin.');
   };
 }
 async function search() {
@@ -425,11 +464,14 @@ let sugT;
 function suggest() {
   clearTimeout(sugT);
   const inp = $('#q'); if (!inp) return; const q = inp.value.trim();
-  if (q.length < 3 || parseCoords(q)) return;
+  if (q.length < 2 || parseCoords(q)) return;
+  const loc = localSearch(q);
+  if (loc.length) renderResults(loc);                         // yerel liste: anında, ağ gerekmez
+  if (q.length < 3) return;
   sugT = setTimeout(async () => {
     try {
       const c = me ? {lat:me.lat, lon:me.lon} : {lat:map.getCenter().lat, lon:map.getCenter().lng};
-      const r = await geocodePhoton(q, c);
+      const r = mergeResults(await geocodePhoton(q, c), loc);
       if (r.length && $('#q') && $('#q').value.trim() === q) renderResults(r);
     } catch {}
   }, 700);
@@ -445,6 +487,7 @@ map.on('click', e => {
 async function request() {
   if (!me) return setErr('Önce konumun alınmalı: "Konumumu yenile" veya "Alış noktasını haritadan seç".');
   if (!dest) return setErr('Varış noktasını seçin.');
+  if (dest.approx && !confirm('Varış noktası bölgenin yaklaşık merkezi, tam adresi işaretlemediniz. Yine de taksi çağırılsın mı?')) return;
   const b = $('#call'); b.disabled = true; setErr('');
   try {
     const ref = doc(collection(db, 'rides'));
