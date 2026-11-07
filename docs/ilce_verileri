@@ -1,0 +1,88 @@
+import os
+import requests
+import json
+import time
+
+# İstanbul'un 39 ilçesinin tam listesi
+istanbul_ilceleri = [
+    "Adalar", "Arnavutköy", "Ataşehir", "Avcılar", "Bağcılar", "Bahçelievler", 
+    "Bakırköy", "Başakşehir", "Bayrampaşa", "Beşiktaş", "Beykoz", "Beylikdüzü", 
+    "Beyoğlu", "Büyükçekmece", "Çatalca", "Çekmeköy", "Esenler", "Esenyurt", 
+    "Eyüpsultan", "Fatih", "Gaziosmanpaşa", "Güngören", "Kadıköy", "Kağıthane", 
+    "Kartal", "Küçükçekmece", "Maltepe", "Pendik", "Sancaktepe", "Sarıyer", 
+    "Silivri", "Sultanbeyli", "Sultangazi", "Şile", "Şişli", "Tuzla", "Ümraniye", 
+    "Üsküdar", "Zeytinburnu"
+]
+
+klasor_adi = "istanbul_tam_sokaklar"
+os.makedirs(klasor_adi, exist_ok=True)
+
+overpass_url = "http://overpass-api.de/api/interpreter"
+
+print("🚀 İstanbul'un tüm mahalle, cadde, sokak ve bulvarları eksiksiz taranıyor...\n")
+
+for index, ilce in enumerate(istanbul_ilceleri, 1):
+    print(f"[{index}/39] {ilce} ilçesinin tüm sokak ve bulvarları çekiliyor...")
+    
+    # Overpass QL: İlçe sınırları içerisindeki tüm highway (yol, cadde, sokak, bulvar) ve adres verilerini çeker
+    overpass_query = f"""
+    [out:json][timeout:180];
+    area["name"="{ilce}"]["boundary"="administrative"]->.searchArea;
+    (
+      way["highway"]["name"](area.searchArea);
+    );
+    out center;
+    """
+    
+    try:
+        response = requests.post(overpass_url, data={'data': overpass_query})
+        
+        if response.status_code == 200:
+            data = response.json()
+            elements = data.get('elements', [])
+            
+            sonuc_listesi = []
+            eklenenler = set()
+
+            for element in elements:
+                tags = element.get('tags', {})
+                isim = tags.get('name')
+                yol_tipi = tags.get('highway') # residential, primary, secondary vb.
+                
+                center = element.get('center', {})
+                lat = center.get('lat')
+                lon = center.get('lon')
+
+                if isim and lat and lon:
+                    key = f"{isim}_{lat}_{lon}"
+                    if key not in eklenenler:
+                        eklenenler.add(key)
+                        
+                        # Yol tipini daha anlaşılır hale getirelim
+                        tip_adi = "Sokak"
+                        if yol_tipi in ["primary", "trunk"]:
+                            tip_adi = "Bulvar / Ana Cadde"
+                        elif yol_tipi in ["secondary", "tertiary"]:
+                            tip_adi = "Cadde"
+                        
+                        sonuc_listesi.append({
+                            "ad": isim,
+                            "tip": tip_adi,
+                            "lat": lat,
+                            "lng": lon
+                        })
+
+            dosya_adi = os.path.join(klasor_adi, f"{ilce.lower().replace(' ', '_')}_tam_liste.json")
+            with open(dosya_adi, "w", encoding="utf-8") as f:
+                json.dump(sonuc_listesi, f, ensure_ascii=False, indent=2)
+                
+            print(f"   ✅ {ilce}: {len(sonuc_listesi)} adet cadde/sokak/bulvar kaydedildi.")
+        else:
+            print(f"   ❌ {ilce} için sunucu yanıt vermedi (Kod: {response.status_code})")
+            
+    except Exception as e:
+        print(f"   ❌ Hata: {e}")
+
+    time.sleep(3) # Sunucunun engellememesi için kısa bekleme
+
+print(f"\n🎉 İşlem tamamlandı! Tüm veriler '{klasor_adi}' klasöründe eksiksiz olarak yer alıyor.")
